@@ -1,0 +1,42 @@
+# FastAPI Core
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+python-multipart==0.0.12
+pydantic==2.9.2
+pydantic-settings==2.6.0
+
+# CORS & Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-dotenv==1.0.1
+email-validator==2.3.0
+
+# Database & Storage
+supabase==2.9.0
+faiss-cpu==1.9.0.post1
+psycopg2-binary==2.9.9
+
+# AI/ML Models
+torch==2.5.1
+torchvision==0.20.1
+transformers==4.46.2
+Pillow==11.0.0
+numpy==2.1.3
+
+# Computer Vision
+opencv-python==4.10.0.84
+ultralytics==8.3.29  # YOLOv8
+
+# APIs & External Services
+openai==1.54.4
+groq==0.11.0  # Alternative LLM provider (faster, cheaper)
+google-generativeai==0.8.3  # Google Gemini
+google-maps-services==2.5.1
+tavily-python==0.5.0
+boto3==1.35.59  # AWS S3
+httpx==0.27.0  # For Ollama API calls
+
+# Utilities
+requests==2.32.3
+aiofiles==24.1.0
+
