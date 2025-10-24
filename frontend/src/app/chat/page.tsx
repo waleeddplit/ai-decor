@@ -10,6 +10,8 @@ import {
   MicOff,
   Image as ImageIcon,
   X,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import { sendChatMessage, ChatMessage as APIMessage } from "@/lib/api";
 
@@ -23,6 +25,7 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
+  recommendations?: any[]; // Artwork recommendations from API
 }
 
 const initialMessages: Message[] = [
@@ -46,13 +49,56 @@ export default function ChatPage() {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isMounted, setIsMounted] = useState(false);
+  const [isPlayingAudio, setIsPlayingAudio] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<any>(null);
+  const synthesisRef = useRef<SpeechSynthesis | null>(null);
 
   // Track when component is mounted (client-side only)
   useEffect(() => {
     setIsMounted(true);
+
+    // Initialize speech synthesis
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      synthesisRef.current = window.speechSynthesis;
+    }
+
+    // Initialize speech recognition
+    if (typeof window !== "undefined") {
+      const SpeechRecognition =
+        (window as any).SpeechRecognition ||
+        (window as any).webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = false;
+        recognition.lang = "en-US";
+
+        recognition.onresult = (event: any) => {
+          const transcript = event.results[0][0].transcript;
+          setInput(transcript);
+          setIsListening(false);
+        };
+
+        recognition.onerror = (event: any) => {
+          console.error("Speech recognition error:", event.error);
+          setIsListening(false);
+          if (event.error === "not-allowed") {
+            setError(
+              "Microphone access denied. Please enable it in your browser settings."
+            );
+          }
+        };
+
+        recognition.onend = () => {
+          setIsListening(false);
+        };
+
+        recognitionRef.current = recognition;
+      }
+    }
   }, []);
 
   // Auto-scroll to bottom when new messages arrive
@@ -114,12 +160,13 @@ export default function ChatPage() {
         setConversationId(response.conversation_id);
       }
 
-      // Add assistant response
+      // Add assistant response with recommendations
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
         content: response.message,
         timestamp: new Date(),
+        recommendations: response.recommendations || undefined,
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
@@ -127,6 +174,13 @@ export default function ChatPage() {
       // Update suggestions
       if (response.suggestions) {
         setSuggestions(response.suggestions);
+      }
+
+      // Log if recommendations were received
+      if (response.recommendations && response.recommendations.length > 0) {
+        console.log(
+          `✅ Received ${response.recommendations.length} artwork recommendations`
+        );
       }
 
       // Clear uploaded image after sending
@@ -214,16 +268,68 @@ export default function ChatPage() {
     inputRef.current?.focus();
   };
 
-  // Handle voice input (mock)
+  // Handle voice input (Speech-to-Text)
   const toggleVoiceInput = () => {
-    setIsListening(!isListening);
-    // TODO: Implement Whisper API integration
-    if (!isListening) {
-      setTimeout(() => {
-        setIsListening(false);
-        setInput("I have a modern living room with gray walls");
-      }, 2000);
+    if (!recognitionRef.current) {
+      setError(
+        "Speech recognition is not supported in your browser. Try Chrome or Edge."
+      );
+      return;
     }
+
+    if (isListening) {
+      // Stop listening
+      recognitionRef.current.stop();
+      setIsListening(false);
+    } else {
+      // Start listening
+      setError(null);
+      try {
+        recognitionRef.current.start();
+        setIsListening(true);
+      } catch (error) {
+        console.error("Failed to start recognition:", error);
+        setError("Failed to start microphone. Please try again.");
+        setIsListening(false);
+      }
+    }
+  };
+
+  // Handle text-to-speech for AI responses
+  const speakMessage = (text: string, messageId: string) => {
+    if (!synthesisRef.current) {
+      setError("Text-to-speech is not supported in your browser.");
+      return;
+    }
+
+    // Stop any currently playing speech
+    if (isPlayingAudio) {
+      synthesisRef.current.cancel();
+      setIsPlayingAudio(null);
+      return;
+    }
+
+    // Create speech utterance
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 0.9; // Slightly slower for clarity
+    utterance.pitch = 1.0;
+    utterance.volume = 1.0;
+
+    utterance.onstart = () => {
+      setIsPlayingAudio(messageId);
+    };
+
+    utterance.onend = () => {
+      setIsPlayingAudio(null);
+    };
+
+    utterance.onerror = () => {
+      setIsPlayingAudio(null);
+      setError("Failed to play audio. Please try again.");
+    };
+
+    // Speak
+    synthesisRef.current.speak(utterance);
   };
 
   // Handle Enter key
@@ -266,27 +372,120 @@ export default function ChatPage() {
 
                 {/* Message Bubble */}
                 <div
-                  className={`max-w-[80%] rounded-2xl px-4 py-3 ${
-                    message.role === "user"
-                      ? "bg-purple-600 text-white dark:bg-purple-500"
-                      : "bg-gray-100 text-gray-900 dark:bg-gray-800 dark:text-white"
+                  className={`max-w-[80%] ${
+                    message.recommendations &&
+                    message.recommendations.length > 0
+                      ? "max-w-full"
+                      : ""
                   }`}
                 >
-                  <p className="text-sm leading-relaxed">{message.content}</p>
-                  {isMounted && (
-                    <p
-                      className={`mt-2 text-xs ${
-                        message.role === "user"
-                          ? "text-purple-200 dark:text-purple-300"
-                          : "text-gray-500 dark:text-gray-400"
-                      }`}
-                    >
-                      {message.timestamp.toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </p>
-                  )}
+                  <div
+                    className={`rounded-2xl px-4 py-3 ${
+                      message.role === "user"
+                        ? "bg-purple-600 text-white dark:bg-purple-500"
+                        : "bg-gray-100 text-gray-900 dark:bg-gray-800 dark:text-white"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="flex-1 text-sm leading-relaxed">
+                        {message.content}
+                      </p>
+                      {/* Text-to-Speech button for assistant messages */}
+                      {message.role === "assistant" && (
+                        <button
+                          onClick={() =>
+                            speakMessage(message.content, message.id)
+                          }
+                          className="flex-shrink-0 rounded-lg p-1 transition-colors hover:bg-gray-200 dark:hover:bg-gray-700"
+                          title={
+                            isPlayingAudio === message.id ? "Stop" : "Listen"
+                          }
+                        >
+                          {isPlayingAudio === message.id ? (
+                            <VolumeX className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+                          ) : (
+                            <Volume2 className="h-4 w-4 text-gray-600 dark:text-gray-400" />
+                          )}
+                        </button>
+                      )}
+                    </div>
+                    {isMounted && (
+                      <p
+                        className={`mt-2 text-xs ${
+                          message.role === "user"
+                            ? "text-purple-200 dark:text-purple-300"
+                            : "text-gray-500 dark:text-gray-400"
+                        }`}
+                      >
+                        {message.timestamp.toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Artwork Recommendations */}
+                  {message.recommendations &&
+                    message.recommendations.length > 0 && (
+                      <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                        {message.recommendations.map(
+                          (rec: any, idx: number) => (
+                            <div
+                              key={idx}
+                              className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm transition-shadow hover:shadow-md dark:border-gray-700 dark:bg-gray-900"
+                            >
+                              <img
+                                src={rec.image_url}
+                                alt={rec.title}
+                                className="h-48 w-full object-cover"
+                              />
+                              <div className="p-4">
+                                <h4 className="font-semibold text-gray-900 dark:text-white">
+                                  {rec.title}
+                                </h4>
+                                <p className="text-sm text-gray-600 dark:text-gray-400">
+                                  {rec.artist}
+                                </p>
+                                <p className="mt-2 text-lg font-bold text-purple-600 dark:text-purple-400">
+                                  {rec.price}
+                                </p>
+                                <div className="mt-2 flex items-center gap-2">
+                                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                                    {Math.round(rec.match_score)}% match
+                                  </span>
+                                  {rec.source && (
+                                    <span className="text-xs text-gray-500 dark:text-gray-400">
+                                      • {rec.source}
+                                    </span>
+                                  )}
+                                </div>
+                                {rec.purchase_url && (
+                                  <a
+                                    href={rec.purchase_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="mt-3 block w-full rounded-lg bg-purple-600 px-4 py-2 text-center text-sm font-medium text-white transition-colors hover:bg-purple-700"
+                                  >
+                                    Buy Now
+                                  </a>
+                                )}
+                                {rec.download_url && !rec.purchase_url && (
+                                  <a
+                                    href={rec.download_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="mt-3 block w-full rounded-lg border border-purple-600 px-4 py-2 text-center text-sm font-medium text-purple-600 transition-colors hover:bg-purple-50 dark:hover:bg-purple-900/20"
+                                  >
+                                    Download Free
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        )}
+                      </div>
+                    )}
                 </div>
 
                 {/* User Avatar */}

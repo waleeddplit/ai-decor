@@ -3,8 +3,10 @@ Chat API routes for conversational décor recommendations
 """
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 from typing import Dict, Any
 import time
+import os
 
 from models.chat import ChatRequest, ChatResponse, ChatMessage
 from agents.chat_agent import get_chat_agent
@@ -43,25 +45,67 @@ async def chat(request: ChatRequest) -> ChatResponse:
         )
         
         # Check if user is asking for recommendations
-        # If so, we could integrate with recommendation agent here
         recommendations = None
         if any(
             word in request.message.lower()
-            for word in ["recommend", "show", "find", "suggest", "options"]
+            for word in ["recommend", "show", "find", "suggest", "options", "artwork", "art", "pieces"]
         ):
-            # Check if we have style context for recommendations
-            if request.context and isinstance(request.context, dict) and "style_vector" in request.context:
-                try:
-                    from agents.decision_router import get_decision_router
-                    
-                    router_agent = get_decision_router()
-                    rec_result = await router_agent.recommend(
-                        style_vector=request.context["style_vector"],
-                        preferences=request.context.get("preferences", {}),
-                    )
-                    recommendations = rec_result.get("recommendations", [])[:3]  # Top 3
-                except Exception as e:
-                    print(f"Could not get recommendations: {e}")
+            try:
+                # Import recommendation components
+                from models.recommendation import RecommendationRequest
+                import numpy as np
+                
+                # Get user style from context or message
+                user_style = "Modern"  # Default
+                colors = []
+                style_vector = None
+                
+                # If we have context from previous room analysis, use it
+                if request.context and isinstance(request.context, dict):
+                    user_style = request.context.get("style", "Modern")
+                    colors = request.context.get("colors", [])
+                    if "style_vector" in request.context:
+                        style_vector = request.context["style_vector"]
+                
+                # If no style vector, create a default one
+                if not style_vector:
+                    # Generate a random style vector for demonstration
+                    # In production, you'd want to generate this based on the message content
+                    style_vector = np.random.rand(512).tolist()
+                
+                # Get recommendations
+                from routes.recommendations import get_recommendations as get_recs
+                rec_request = RecommendationRequest(
+                    style_vector=style_vector,
+                    user_style=user_style,
+                    color_preferences=colors or ["#E8E8E8"],
+                    limit=3
+                )
+                
+                rec_response = await get_recs(rec_request)
+                recommendations = [
+                    {
+                        "id": rec.id,
+                        "title": rec.title,
+                        "artist": rec.artist,
+                        "price": rec.price,
+                        "image_url": str(rec.image_url),
+                        "thumbnail_url": str(rec.thumbnail_url) if rec.thumbnail_url else None,
+                        "match_score": rec.match_score,
+                        "reasoning": rec.reasoning,
+                        "source": rec.source,
+                        "purchase_url": rec.purchase_url,
+                        "download_url": rec.download_url,
+                    }
+                    for rec in rec_response.recommendations[:3]
+                ]
+                
+                print(f"✅ Generated {len(recommendations)} recommendations for chat")
+                
+            except Exception as e:
+                print(f"⚠️  Could not get recommendations: {e}")
+                import traceback
+                traceback.print_exc()
         
         processing_time = time.time() - start_time
         

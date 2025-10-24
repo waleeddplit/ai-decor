@@ -150,12 +150,14 @@ Guidelines:
 
     async def _get_llm_response(self, messages: List[Dict[str, str]]) -> str:
         """
-        Get response from LLM (OpenAI or Groq)
+        Get response from LLM (OpenAI, Groq, Gemini, or Ollama)
         """
-        if not self.api_key:
-            raise ValueError("No API key configured")
+        if not self.api_key and self.provider != "ollama":
+            raise ValueError("No API key configured. Please check your GEMINI_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY.")
         
-        if self.provider == "openai":
+        if self.provider == "ollama":
+            return await self._ollama_request(messages)
+        elif self.provider == "openai":
             return await self._openai_request(messages)
         elif self.provider == "groq":
             return await self._groq_request(messages)
@@ -204,6 +206,43 @@ Guidelines:
         except Exception as e:
             raise Exception(f"Groq API error: {e}")
 
+    async def _ollama_request(self, messages: List[Dict[str, str]]) -> str:
+        """Make request to Ollama local LLM"""
+        try:
+            import httpx
+            
+            # Convert messages to Ollama format
+            conversation_text = ""
+            for msg in messages:
+                role = msg["role"]
+                content = msg["content"]
+                if role == "system":
+                    conversation_text += f"System: {content}\n\n"
+                elif role == "user":
+                    conversation_text += f"User: {content}\n\n"
+                elif role == "assistant":
+                    conversation_text += f"Assistant: {content}\n\n"
+            
+            url = f"{self.ollama_base_url}/api/generate"
+            payload = {
+                "model": self.model,
+                "prompt": conversation_text,
+                "stream": False,
+                "options": {
+                    "temperature": 0.7,
+                    "num_predict": 500,
+                }
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+                result = response.json()
+                return result.get("response", "")
+                
+        except Exception as e:
+            raise Exception(f"Ollama API error: {e}")
+    
     async def _gemini_request(self, messages: List[Dict[str, str]]) -> str:
         """Make request to Google Gemini API"""
         try:

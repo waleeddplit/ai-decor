@@ -105,10 +105,27 @@ export default function UploadPage() {
 
       setProgress("Generating recommendations...");
 
+      // Try to get user location (optional - doesn't block if denied)
+      let userLocation = null;
+      try {
+        setProgress("Getting your location for nearby stores...");
+        const { getUserLocation } = await import("@/lib/api");
+        userLocation = await getUserLocation();
+        console.log("📍 Got user location:", userLocation);
+      } catch (locError) {
+        console.log("Location not available (user may have denied permission)");
+        // Continue without location - nearby stores just won't be shown
+      }
+
       // Store analysis in sessionStorage for results page
       sessionStorage.setItem("roomAnalysis", JSON.stringify(analysis));
       sessionStorage.setItem("roomImage", imagePreview || "");
       sessionStorage.setItem("roomDescription", description);
+
+      // Store user location if available
+      if (userLocation) {
+        sessionStorage.setItem("userLocation", JSON.stringify(userLocation));
+      }
 
       // Navigate to results page
       setTimeout(() => {

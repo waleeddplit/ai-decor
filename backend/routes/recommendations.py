@@ -4,6 +4,9 @@ POST /recommend - Get artwork recommendations
 """
 
 import time
+import json
+import random
+from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -18,6 +21,7 @@ from db.supabase_client import get_supabase_client
 from agents.trend_intel_agent import TrendIntelAgent
 from agents.chat_agent import get_chat_agent
 from agents.store_inventory_agent import get_store_inventory_agent
+from agents.geo_finder_agent import GeoFinderAgent
 
 router = APIRouter(prefix="/api", tags=["Recommendations"])
 
@@ -25,6 +29,132 @@ router = APIRouter(prefix="/api", tags=["Recommendations"])
 trend_agent = TrendIntelAgent()
 chat_agent = get_chat_agent()
 store_agent = get_store_inventory_agent()
+geo_agent = GeoFinderAgent()
+
+# Load local catalog
+LOCAL_CATALOG = []
+LOCAL_CATALOG_PATH = Path(__file__).parent.parent / "data" / "local_catalog.json"
+
+def load_local_catalog():
+    """Load local catalog from JSON file"""
+    global LOCAL_CATALOG
+    if LOCAL_CATALOG_PATH.exists():
+        with open(LOCAL_CATALOG_PATH, 'r') as f:
+            LOCAL_CATALOG = json.load(f)
+            print(f"✅ Loaded {len(LOCAL_CATALOG)} items from local catalog")
+    else:
+        print("⚠️  Local catalog not found. Run scripts/build_catalog.py first.")
+
+# Load catalog on module import
+load_local_catalog()
+
+
+def get_local_catalog_recommendations(style: str, limit: int = 3) -> list:
+    """
+    Get recommendations from local catalog
+    Returns items matching the style
+    """
+    if not LOCAL_CATALOG:
+        return []
+    
+    # Simple keyword matching for now
+    style_keywords = style.lower().split()
+    
+    # Score each item based on keyword matches
+    scored_items = []
+    for item in LOCAL_CATALOG:
+        score = 0
+        item_text = f"{item['title']} {item['description']} {' '.join(item['tags'])}".lower()
+        
+        for keyword in style_keywords:
+            if keyword in item_text:
+                score += 1
+        
+        if score > 0:
+            scored_items.append((score, item))
+    
+    # Sort by score and get top items
+    scored_items.sort(key=lambda x: x[0], reverse=True)
+    
+    # If we have scored items, return them
+    if scored_items:
+        return [item for score, item in scored_items[:limit]]
+    
+    # Otherwise return random selection
+    return random.sample(LOCAL_CATALOG, min(limit, len(LOCAL_CATALOG)))
+
+
+@router.post("/nearby-stores")
+async def get_nearby_stores(
+    latitude: float,
+    longitude: float,
+    radius: int = 10000,
+    store_type: str = "art_gallery"
+):
+    """
+    Find nearby art stores and galleries
+    
+    Args:
+        latitude: User's latitude
+        longitude: User's longitude
+        radius: Search radius in meters (default 10km)
+        store_type: Type of store (art_gallery, home_goods_store, furniture_store)
+    
+    Returns:
+        List of nearby stores with details
+    """
+    try:
+        stores = await geo_agent.find_nearby_stores(
+            latitude=latitude,
+            longitude=longitude,
+            radius=radius,
+            store_type=store_type
+        )
+        
+        return {
+            "stores": stores,
+            "total": len(stores),
+            "search_location": {"latitude": latitude, "longitude": longitude},
+            "radius_km": radius / 1000
+        }
+    except Exception as e:
+        print(f"Error finding nearby stores: {e}")
+        raise HTTPException(status_code=500, detail=f"Error finding stores: {str(e)}")
+
+
+@router.post("/directions")
+async def get_store_directions(
+    origin_lat: float,
+    origin_lng: float,
+    dest_lat: float,
+    dest_lng: float
+):
+    """
+    Get directions from user location to store
+    
+    Args:
+        origin_lat: User's latitude
+        origin_lng: User's longitude
+        dest_lat: Store's latitude
+        dest_lng: Store's longitude
+    
+    Returns:
+        Directions with distance, duration, and steps
+    """
+    try:
+        directions = await geo_agent.get_directions(
+            origin=(origin_lat, origin_lng),
+            destination=(dest_lat, dest_lng)
+        )
+        
+        return {
+            "directions": directions,
+            "origin": {"lat": origin_lat, "lng": origin_lng},
+            "destination": {"lat": dest_lat, "lng": dest_lng}
+        }
+    except Exception as e:
+        print(f"Error getting directions: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting directions: {str(e)}")
 
 
 @router.post("/recommend", response_model=RecommendationResponse)
@@ -174,6 +304,97 @@ async def get_recommendations(request: RecommendationRequest):
                 room_style, colors, request.limit
             )
             recommendations = mock_recommendations
+
+        # ==================================================================
+        # ADD LOCAL CATALOG RECOMMENDATIONS (Hybrid Approach)
+        # ==================================================================
+        # Strategy: Keep 1-2 online recommendations, add 2 local catalog items
+        # This ensures users see both local and online options
+        room_style = request.user_style or request.room_style or "Modern"
+        
+        # Keep only 1 online recommendation if we have any
+        online_recommendations = recommendations[:1] if recommendations else []
+        local_catalog_recommendations = []
+        
+        # Get 2 local catalog items
+        local_items = get_local_catalog_recommendations(room_style, limit=2)
+        
+        if local_items:
+            print(f"📁 Adding {len(local_items)} local catalog recommendations")
+            for item in local_items:
+                # Generate AI reasoning for local catalog items
+                reasoning = await chat_agent.generate_reasoning(
+                    artwork_title=item['title'],
+                    artwork_style=item['category'].replace('_', ' ').title(),
+                    room_style=room_style,
+                    match_score=85.0  # High match for curated items
+                )
+                
+                local_catalog_recommendations.append(ArtworkRecommendation(
+                    id=item['id'],
+                    title=item['title'],
+                    artist=item['artist'],
+                    price=item['price'],
+                    image_url=item['image_url'],
+                    thumbnail_url=item['thumbnail_url'],
+                    style=item['category'].replace('_', ' ').title(),
+                    tags=item['tags'],
+                    dimensions=f"{item['width']}x{item['height']}",
+                    match_score=85.0,
+                    reasoning=reasoning,
+                    download_url=item['download_url'],
+                    source="📁 Local Catalog",  # Clear indicator
+                    purchase_options=[],
+                    print_on_demand=[{
+                        'service': ps['name'],
+                        'url': ps['url'],
+                        'price': ps['price_from']
+                    } for ps in item['print_services']],
+                    attribution={
+                        'text': item['attribution'],
+                        'url': item['attribution_url']
+                    }
+                ))
+        
+        # Combine: 2 local + 1 online
+        recommendations = local_catalog_recommendations + online_recommendations
+        print(f"📊 Final mix: {len(local_catalog_recommendations)} local + {len(online_recommendations)} online")
+
+        # Add nearby stores if user location provided
+        if request.user_location and request.user_location.get('latitude') and request.user_location.get('longitude'):
+            try:
+                print(f"🗺️  Finding nearby art stores for location: {request.user_location}")
+                nearby_stores = await geo_agent.find_nearby_stores(
+                    latitude=request.user_location['latitude'],
+                    longitude=request.user_location['longitude'],
+                    radius=request.user_location.get('radius', 10000),  # Default 10km
+                    store_type="art_gallery"
+                )
+                
+                # Add nearby stores to each recommendation
+                if nearby_stores:
+                    print(f"✅ Found {len(nearby_stores)} nearby stores")
+                    for rec in recommendations:
+                        # Format stores for response
+                        rec.stores = [
+                            {
+                                "name": store["name"],
+                                "address": store["address"],
+                                "distance": f"{store['distance']} km",
+                                "rating": store.get("rating", "N/A"),
+                                "phone": store.get("phone", "N/A"),
+                                "website": store.get("website", "N/A"),
+                                "is_open": store.get("is_open"),
+                                "lat": store["location"]["lat"],
+                                "lng": store["location"]["lng"]
+                            }
+                            for store in nearby_stores[:5]  # Top 5 closest stores
+                        ]
+                else:
+                    print("ℹ️  No nearby stores found")
+            except Exception as e:
+                print(f"⚠️  Error finding nearby stores: {e}")
+                # Continue without local stores
 
         query_time = time.time() - start_time
 

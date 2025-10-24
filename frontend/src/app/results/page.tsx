@@ -15,9 +15,13 @@ import {
   ShoppingCart,
   Download,
   Store,
+  Navigation,
+  X,
+  Clock,
+  Phone,
+  Globe,
 } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import {
   getRecommendations,
   type RoomAnalysisResponse,
@@ -31,9 +35,12 @@ import {
  */
 
 export default function ResultsPage() {
-  const router = useRouter();
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showDirections, setShowDirections] = useState(false);
+  const [selectedStore, setSelectedStore] = useState<any>(null);
+  const [directionsData, setDirectionsData] = useState<any>(null);
+  const [loadingDirections, setLoadingDirections] = useState(false);
   const [roomAnalysis, setRoomAnalysis] = useState<RoomAnalysisResponse | null>(
     null
   );
@@ -46,6 +53,7 @@ export default function ResultsPage() {
     null
   );
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [nearbyStores, setNearbyStores] = useState<any[]>([]);
 
   useEffect(() => {
     loadResults();
@@ -56,6 +64,7 @@ export default function ResultsPage() {
       // Get room analysis from sessionStorage
       const analysisData = sessionStorage.getItem("roomAnalysis");
       const imageData = sessionStorage.getItem("roomImage");
+      const locationData = sessionStorage.getItem("userLocation");
 
       if (!analysisData) {
         setError("No room analysis found. Please upload a room image first.");
@@ -67,26 +76,33 @@ export default function ResultsPage() {
       setRoomAnalysis(analysis);
       setRoomImage(imageData || "");
 
-      // Get recommendations from backend
+      // Parse user location if available
+      let userLocation = null;
+      if (locationData) {
+        try {
+          userLocation = JSON.parse(locationData);
+          console.log("📍 Using stored location:", userLocation);
+        } catch (e) {
+          console.error("Error parsing user location:", e);
+        }
+      }
+
+      // Get recommendations from backend (with location if available)
       const recommendationsData = await getRecommendations({
         style_vector: analysis.style_vector,
         user_style: analysis.style,
         color_preferences: analysis.palette.map((c) => c.hex),
+        user_location: userLocation,
       });
 
       setRecommendations(recommendationsData.recommendations);
       setTrendingStyles(recommendationsData.trends || []);
 
-      // Debug: Log first recommendation to check purchase_url
+      // Extract nearby stores from first recommendation (they're the same for all)
       if (recommendationsData.recommendations.length > 0) {
-        console.log(
-          "First recommendation:",
-          recommendationsData.recommendations[0]
-        );
-        console.log(
-          "Has purchase_url?",
-          !!recommendationsData.recommendations[0].purchase_url
-        );
+        const stores = recommendationsData.recommendations[0].stores || [];
+        setNearbyStores(stores);
+        console.log(`📍 Extracted ${stores.length} nearby stores`);
       }
 
       setIsLoading(false);
@@ -109,6 +125,44 @@ export default function ResultsPage() {
       newFavorites.add(id);
     }
     setFavorites(newFavorites);
+  };
+
+  const handleGetDirections = async (store: any) => {
+    setSelectedStore(store);
+    setShowDirections(true);
+    setLoadingDirections(true);
+    setDirectionsData(null);
+
+    try {
+      const locationData = sessionStorage.getItem("userLocation");
+      if (!locationData) {
+        setDirectionsData({
+          error:
+            "Your location is not available. Please enable location services.",
+        });
+        setLoadingDirections(false);
+        return;
+      }
+
+      const userLocation = JSON.parse(locationData);
+      const { getDirectionsToStore } = await import("@/lib/api");
+
+      const directions = await getDirectionsToStore(
+        userLocation.latitude,
+        userLocation.longitude,
+        store.lat,
+        store.lng
+      );
+
+      setDirectionsData(directions);
+      setLoadingDirections(false);
+    } catch (error) {
+      console.error("Error fetching directions:", error);
+      setDirectionsData({
+        error: "Failed to load directions. Please try again.",
+      });
+      setLoadingDirections(false);
+    }
   };
 
   const toggleReasoning = (id: string) => {
@@ -519,22 +573,103 @@ export default function ResultsPage() {
                         ))}
                     </div>
                   )}
-
-                  {/* Local Stores (backward compatibility) */}
-                  {rec.stores && rec.stores.length > 0 && !rec.purchase_url && (
-                    <div className="mt-4 border-t border-gray-200 pt-4 dark:border-gray-800">
-                      <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
-                        <MapPin className="h-4 w-4" />
-                        <span>Available at {rec.stores.length} stores</span>
-                      </div>
-                    </div>
-                  )}
                 </div>
               </div>
             ))}
           </div>
         )}
       </div>
+
+      {/* Nearby Art Stores Section */}
+      {nearbyStores.length > 0 && (
+        <div className="mt-12">
+          <div className="mb-6 text-center">
+            <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">
+              📍 Nearby Art Stores & Galleries
+            </h2>
+            <p className="text-gray-600 dark:text-gray-400">
+              Find these artworks at local stores near you
+            </p>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {nearbyStores.map((store: any, idx: number) => (
+              <div
+                key={idx}
+                className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm transition-shadow hover:shadow-md dark:border-gray-800 dark:bg-gray-900"
+              >
+                <div className="mb-3 flex items-start justify-between">
+                  <div className="flex-1">
+                    <h3 className="font-semibold text-gray-900 dark:text-white">
+                      {store.name}
+                    </h3>
+                    <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                      {store.address}
+                    </p>
+                  </div>
+                  {store.is_open !== undefined && (
+                    <span
+                      className={`ml-2 flex-shrink-0 rounded-full px-2 py-1 text-xs font-medium ${
+                        store.is_open
+                          ? "bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400"
+                          : "bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400"
+                      }`}
+                    >
+                      {store.is_open ? "Open" : "Closed"}
+                    </span>
+                  )}
+                </div>
+
+                <div className="mb-4 flex flex-wrap gap-3 text-sm text-gray-600 dark:text-gray-400">
+                  <span className="flex items-center gap-1">
+                    📏 {store.distance}
+                  </span>
+                  {store.rating && store.rating !== "N/A" && (
+                    <span className="flex items-center gap-1">
+                      ⭐ {store.rating}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex gap-2">
+                  {store.phone && store.phone !== "N/A" && (
+                    <a
+                      href={`tel:${store.phone}`}
+                      className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-center text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                      title="Call store"
+                    >
+                      <Phone className="inline h-4 w-4 mr-1" />
+                      Call
+                    </a>
+                  )}
+                  {store.website && store.website !== "N/A" && (
+                    <a
+                      href={store.website}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-center text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                      title="Visit website"
+                    >
+                      <Globe className="inline h-4 w-4 mr-1" />
+                      Website
+                    </a>
+                  )}
+                  {store.lat && store.lng && (
+                    <button
+                      onClick={() => handleGetDirections(store)}
+                      className="flex-1 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+                      title="Get directions"
+                    >
+                      <Navigation className="inline h-4 w-4 mr-1" />
+                      Directions
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Actions */}
       <div className="mt-12 flex flex-wrap justify-center gap-4">
@@ -553,6 +688,188 @@ export default function ResultsPage() {
           Refine with Chat
         </Link>
       </div>
+
+      {/* Directions Modal */}
+      {showDirections && selectedStore && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white shadow-2xl dark:bg-gray-900">
+            {/* Header */}
+            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-gray-200 bg-white p-6 dark:border-gray-800 dark:bg-gray-900">
+              <div className="flex items-center gap-3">
+                <Navigation className="h-6 w-6 text-blue-600" />
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900 dark:text-white">
+                    Directions
+                  </h2>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                    {selectedStore.name}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowDirections(false)}
+                className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-6">
+              {loadingDirections ? (
+                <div className="flex flex-col items-center justify-center py-12">
+                  <Loader2 className="mb-4 h-12 w-12 animate-spin text-blue-600" />
+                  <p className="text-gray-600 dark:text-gray-400">
+                    Loading directions...
+                  </p>
+                </div>
+              ) : directionsData?.error ? (
+                <div className="rounded-lg bg-red-50 p-4 text-red-700 dark:bg-red-900/20 dark:text-red-400">
+                  <AlertCircle className="mb-2 h-6 w-6" />
+                  <p>{directionsData.error}</p>
+                </div>
+              ) : directionsData ? (
+                <div className="space-y-6">
+                  {/* Store Info */}
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-800 dark:bg-gray-900">
+                    <div className="mb-2 flex items-start justify-between">
+                      <div>
+                        <h3 className="font-semibold text-gray-900 dark:text-white">
+                          {selectedStore.name}
+                        </h3>
+                        <p className="text-sm text-gray-600 dark:text-gray-400">
+                          {selectedStore.address}
+                        </p>
+                      </div>
+                      {selectedStore.is_open !== undefined && (
+                        <span
+                          className={`rounded-full px-3 py-1 text-xs font-medium ${
+                            selectedStore.is_open
+                              ? "bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400"
+                              : "bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400"
+                          }`}
+                        >
+                          {selectedStore.is_open ? "Open" : "Closed"}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-4 text-sm text-gray-600 dark:text-gray-400">
+                      {selectedStore.phone && selectedStore.phone !== "N/A" && (
+                        <a
+                          href={`tel:${selectedStore.phone}`}
+                          className="flex items-center gap-1 hover:text-blue-600"
+                        >
+                          <Phone className="h-4 w-4" />
+                          {selectedStore.phone}
+                        </a>
+                      )}
+                      {selectedStore.rating &&
+                        selectedStore.rating !== "N/A" && (
+                          <span className="flex items-center gap-1">
+                            ⭐ {selectedStore.rating}
+                          </span>
+                        )}
+                      {selectedStore.website &&
+                        selectedStore.website !== "N/A" && (
+                          <a
+                            href={selectedStore.website}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-1 hover:text-blue-600"
+                          >
+                            <Globe className="h-4 w-4" />
+                            Website
+                          </a>
+                        )}
+                    </div>
+                  </div>
+
+                  {/* Trip Summary */}
+                  {directionsData.directions && (
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="rounded-lg border border-gray-200 bg-white p-4 text-center dark:border-gray-700 dark:bg-gray-800">
+                        <div className="text-2xl font-bold text-blue-600">
+                          {directionsData.directions.distance}
+                        </div>
+                        <div className="text-sm text-gray-600 dark:text-gray-400">
+                          Distance
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-gray-200 bg-white p-4 text-center dark:border-gray-700 dark:bg-gray-800">
+                        <div className="flex items-center justify-center gap-2 text-2xl font-bold text-blue-600">
+                          <Clock className="h-6 w-6" />
+                          {directionsData.directions.duration}
+                        </div>
+                        <div className="text-sm text-gray-600 dark:text-gray-400">
+                          Duration
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Turn-by-Turn Directions */}
+                  {directionsData.directions?.steps && (
+                    <div>
+                      <h3 className="mb-3 font-semibold text-gray-900 dark:text-white">
+                        Turn-by-Turn Directions
+                      </h3>
+                      <div className="space-y-3">
+                        {directionsData.directions.steps.map(
+                          (step: string, idx: number) => (
+                            <div
+                              key={idx}
+                              className="flex gap-3 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800"
+                            >
+                              <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm font-bold text-white">
+                                {idx + 1}
+                              </div>
+                              <div
+                                className="flex-1 text-sm text-gray-700 dark:text-gray-300"
+                                dangerouslySetInnerHTML={{ __html: step }}
+                              />
+                            </div>
+                          )
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Action Buttons */}
+                  <div className="flex gap-3">
+                    <button
+                      onClick={async () => {
+                        const { openGoogleMapsDirections } = await import(
+                          "@/lib/api"
+                        );
+                        const locationData =
+                          sessionStorage.getItem("userLocation");
+                        if (locationData) {
+                          const userLoc = JSON.parse(locationData);
+                          openGoogleMapsDirections(
+                            userLoc.latitude,
+                            userLoc.longitude,
+                            selectedStore.lat,
+                            selectedStore.lng
+                          );
+                        }
+                      }}
+                      className="flex-1 rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white transition-colors hover:bg-blue-700"
+                    >
+                      Open in Google Maps
+                    </button>
+                    <button
+                      onClick={() => setShowDirections(false)}
+                      className="rounded-lg border border-gray-300 px-4 py-3 font-semibold text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

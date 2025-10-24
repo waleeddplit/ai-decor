@@ -158,30 +158,6 @@ export async function getRecommendations(
 }
 
 /**
- * Get nearby stores
- */
-export async function getNearbyStores(
-  latitude: number,
-  longitude: number,
-  radius: number = 10000
-): Promise<StoreInfo[]> {
-  const params = new URLSearchParams({
-    latitude: latitude.toString(),
-    longitude: longitude.toString(),
-    radius: radius.toString(),
-  });
-
-  const response = await fetch(`${API_BASE_URL}/api/stores/nearby?${params}`);
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-    throw new Error(error.detail || `HTTP ${response.status}: ${response.statusText}`);
-  }
-
-  return response.json();
-}
-
-/**
  * Health check
  */
 export async function checkHealth(): Promise<{ status: string; timestamp: string }> {
@@ -295,5 +271,179 @@ export async function clearChatHistory(conversationId: string): Promise<void> {
     const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
     throw new Error(error.detail || `HTTP ${response.status}: ${response.statusText}`);
   }
+}
+
+// ============================================================================
+// Geo-Finder API Functions
+// ============================================================================
+
+export interface UserLocation {
+  latitude: number;
+  longitude: number;
+  radius?: number;
+}
+
+export interface NearbyStore {
+  id: string;
+  name: string;
+  address: string;
+  location: {
+    lat: number;
+    lng: number;
+  };
+  rating: number;
+  distance: number;
+  phone?: string;
+  website?: string;
+  is_open?: boolean;
+  opening_hours?: string[];
+}
+
+export interface NearbyStoresResponse {
+  stores: NearbyStore[];
+  total: number;
+  search_location: {
+    latitude: number;
+    longitude: number;
+  };
+  radius_km: number;
+}
+
+export interface DirectionsResponse {
+  directions: {
+    distance: string;
+    duration: string;
+    steps: string[];
+  };
+  origin: {
+    lat: number;
+    lng: number;
+  };
+  destination: {
+    lat: number;
+    lng: number;
+  };
+}
+
+/**
+ * Get user's current location using browser geolocation API
+ */
+export function getUserLocation(): Promise<UserLocation> {
+  return new Promise((resolve, reject) => {
+    if (!('geolocation' in navigator)) {
+      reject(new Error('Geolocation is not supported by your browser'));
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        resolve({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        });
+      },
+      (error) => {
+        let errorMessage = 'Unable to retrieve location';
+        switch (error.code) {
+          case error.PERMISSION_DENIED:
+            errorMessage = 'Location permission denied';
+            break;
+          case error.POSITION_UNAVAILABLE:
+            errorMessage = 'Location information unavailable';
+            break;
+          case error.TIMEOUT:
+            errorMessage = 'Location request timeout';
+            break;
+        }
+        reject(new Error(errorMessage));
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 5000,
+        maximumAge: 0,
+      }
+    );
+  });
+}
+
+/**
+ * Find nearby art stores and galleries
+ */
+export async function getNearbyStores(
+  latitude: number,
+  longitude: number,
+  radius: number = 10000,
+  storeType: string = 'art_gallery'
+): Promise<NearbyStoresResponse> {
+  const params = new URLSearchParams({
+    latitude: latitude.toString(),
+    longitude: longitude.toString(),
+    radius: radius.toString(),
+    store_type: storeType,
+  });
+
+  const response = await fetch(
+    `${API_BASE_URL}/api/nearby-stores?${params}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get directions from user location to a store
+ */
+export async function getDirectionsToStore(
+  originLat: number,
+  originLng: number,
+  destLat: number,
+  destLng: number
+): Promise<DirectionsResponse> {
+  const params = new URLSearchParams({
+    origin_lat: originLat.toString(),
+    origin_lng: originLng.toString(),
+    dest_lat: destLat.toString(),
+    dest_lng: destLng.toString(),
+  });
+
+  const response = await fetch(
+    `${API_BASE_URL}/api/directions?${params}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Open Google Maps with directions
+ */
+export function openGoogleMapsDirections(
+  originLat: number,
+  originLng: number,
+  destLat: number,
+  destLng: number
+): void {
+  const url = `https://www.google.com/maps/dir/?api=1&origin=${originLat},${originLng}&destination=${destLat},${destLng}`;
+  window.open(url, '_blank');
 }
 
