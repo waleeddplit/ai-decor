@@ -9,12 +9,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+# Load environment variables FIRST (before importing routes)
 from dotenv import load_dotenv
-
-from routes import room_analysis_router, recommendations_router, profile_router, chat_router
-
-# Load environment variables
 load_dotenv()
+
+# Now import routes (they will see the environment variables)
+from routes import room_analysis_router, recommendations_router, profile_router, chat_router
 
 
 @asynccontextmanager

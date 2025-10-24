@@ -443,8 +443,8 @@ Guidelines:
         Returns:
             AI-generated reasoning text
         """
-        if not self.api_key:
-            # Fallback to template if no API key
+        if not self.api_key and self.provider != "ollama":
+            # Fallback to template if no API key (Ollama doesn't need one)
             return f"This {artwork_style} piece complements your {room_style or 'room'} with a {match_score:.0f}% match."
         
         try:

@@ -22,6 +22,14 @@ class ArtworkRecommendation(BaseModel):
     dimensions: Optional[str] = None
     medium: Optional[str] = None
     style: Optional[str] = None
+    
+    # New fields for real store integration
+    purchase_url: Optional[str] = None
+    download_url: Optional[str] = None
+    source: Optional[str] = Field(None, description="Source (Unsplash, Tavily, etc.)")
+    purchase_options: Optional[List[dict]] = Field(default_factory=list, description="Multiple purchase options")
+    print_on_demand: Optional[List[dict]] = Field(default_factory=list, description="Print-on-demand services")
+    attribution: Optional[dict] = None
 
 
 class RecommendationRequest(BaseModel):
