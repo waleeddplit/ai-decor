@@ -23,7 +23,10 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import {
-  getRecommendations,
+  getFastRecommendations,
+  getTrendingStyles,
+  getNearbyStores,
+  enrichRecommendationsWithReasoning,
   type RoomAnalysisResponse,
   type ArtworkRecommendation,
   type ColorInfo,
@@ -54,6 +57,7 @@ export default function ResultsPage() {
   );
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
   const [nearbyStores, setNearbyStores] = useState<any[]>([]);
+  const [isEnrichingReasoning, setIsEnrichingReasoning] = useState(false);
 
   useEffect(() => {
     loadResults();
@@ -87,25 +91,99 @@ export default function ResultsPage() {
         }
       }
 
-      // Get recommendations from backend (with location if available)
-      const recommendationsData = await getRecommendations({
+      // PROGRESSIVE LOADING: Get fast recommendations first (2-3s)
+      const fastData = await getFastRecommendations({
         style_vector: analysis.style_vector,
         user_style: analysis.style,
         color_preferences: analysis.palette.map((c) => c.hex),
-        user_location: userLocation,
       });
 
-      setRecommendations(recommendationsData.recommendations);
-      setTrendingStyles(recommendationsData.trends || []);
+      // Show fast results immediately (without reasoning text)
+      setRecommendations(
+        fastData.recommendations.map((rec) => ({
+          ...rec,
+          reasoning: "", // Empty reasoning - will show skeleton loader
+        }))
+      );
+      setIsLoading(false);
+      setIsEnrichingReasoning(true);
+      console.log(`⚡ Fast recommendations loaded`);
 
-      // Extract nearby stores from first recommendation (they're the same for all)
-      if (recommendationsData.recommendations.length > 0) {
-        const stores = recommendationsData.recommendations[0].stores || [];
-        setNearbyStores(stores);
-        console.log(`📍 Extracted ${stores.length} nearby stores`);
+      // Enrich with AI reasoning in background (LLaVA/Ollama)
+      if (fastData.recommendations.length > 0) {
+        console.log(
+          `🧠 Enriching ${fastData.recommendations.length} recommendations with AI reasoning...`
+        );
+        enrichRecommendationsWithReasoning(
+          fastData.recommendations.map((rec) => ({
+            id: rec.id,
+            title: rec.title,
+            style: rec.style,
+            match_score: rec.match_score,
+            tags: rec.tags,
+          })),
+          analysis.style,
+          analysis.palette.map((c) => c.hex)
+        )
+          .then((enrichedData) => {
+            console.log(
+              `✅ AI reasoning loaded for ${enrichedData.enriched_count} items`
+            );
+
+            // Update recommendations with AI reasoning
+            setRecommendations((prevRecs) =>
+              prevRecs.map((rec) => {
+                const enriched = enrichedData.reasoning_list.find(
+                  (r) => r.artwork_id === rec.id
+                );
+                if (enriched) {
+                  return { ...rec, reasoning: enriched.reasoning };
+                }
+                return rec;
+              })
+            );
+            setIsEnrichingReasoning(false);
+          })
+          .catch((e) => {
+            console.error("AI reasoning failed:", e);
+            console.log("💡 Using fallback reasoning");
+            // Fallback to original template reasoning
+            setRecommendations((prevRecs) =>
+              prevRecs.map((rec, idx) => {
+                const original = fastData.recommendations[idx];
+                return {
+                  ...rec,
+                  reasoning: original?.reasoning || rec.reasoning,
+                };
+              })
+            );
+            setIsEnrichingReasoning(false);
+          });
       }
 
-      setIsLoading(false);
+      // Load trending styles in background (no await - happens async)
+      getTrendingStyles(5)
+        .then((trendsData) => {
+          setTrendingStyles(trendsData.trending_styles || []);
+          console.log(`📈 Trends loaded`);
+        })
+        .catch((e) => console.error("Trends failed:", e));
+
+      // Load nearby stores in background if location available
+      if (userLocation?.latitude && userLocation?.longitude) {
+        getNearbyStores(
+          userLocation.latitude,
+          userLocation.longitude,
+          userLocation.radius || 10000
+        )
+          .then((storesData) => {
+            setNearbyStores(storesData.stores || []);
+            console.log(
+              `📍 Loaded ${storesData.stores?.length || 0} nearby stores`
+            );
+          })
+          .catch((e) => console.error("Stores failed:", e));
+      }
     } catch (err) {
       console.error("Error loading results:", err);
       setError(
@@ -360,7 +438,9 @@ export default function ResultsPage() {
                 className="inline-flex items-center rounded-full bg-white px-4 py-2 text-sm font-medium text-purple-700 shadow-sm ring-1 ring-purple-200 dark:bg-gray-800 dark:text-purple-300 dark:ring-purple-700"
               >
                 <TrendingUp className="mr-2 h-4 w-4" />
-                {trend}
+                {typeof trend === "string"
+                  ? trend
+                  : trend.style || trend.description || "Trending Style"}
               </span>
             ))}
           </div>
@@ -475,9 +555,24 @@ export default function ResultsPage() {
                     </button>
 
                     {expandedReasoning === rec.id && (
-                      <p className="mt-3 text-sm text-gray-600 dark:text-gray-400">
-                        {rec.reasoning}
-                      </p>
+                      <div className="mt-3">
+                        {!rec.reasoning && isEnrichingReasoning ? (
+                          // Skeleton loader while AI reasoning is being generated
+                          <div className="space-y-2 animate-pulse">
+                            <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-full"></div>
+                            <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-5/6"></div>
+                            <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-4/6"></div>
+                            <div className="flex items-center gap-2 mt-2 text-xs text-gray-500">
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                              <span>AI generating reasoning...</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-sm text-gray-600 dark:text-gray-400">
+                            {rec.reasoning || "No reasoning available."}
+                          </p>
+                        )}
+                      </div>
                     )}
                   </div>
 
@@ -783,56 +878,6 @@ export default function ResultsPage() {
                         )}
                     </div>
                   </div>
-
-                  {/* Trip Summary */}
-                  {directionsData.directions && (
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="rounded-lg border border-gray-200 bg-white p-4 text-center dark:border-gray-700 dark:bg-gray-800">
-                        <div className="text-2xl font-bold text-blue-600">
-                          {directionsData.directions.distance}
-                        </div>
-                        <div className="text-sm text-gray-600 dark:text-gray-400">
-                          Distance
-                        </div>
-                      </div>
-                      <div className="rounded-lg border border-gray-200 bg-white p-4 text-center dark:border-gray-700 dark:bg-gray-800">
-                        <div className="flex items-center justify-center gap-2 text-2xl font-bold text-blue-600">
-                          <Clock className="h-6 w-6" />
-                          {directionsData.directions.duration}
-                        </div>
-                        <div className="text-sm text-gray-600 dark:text-gray-400">
-                          Duration
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Turn-by-Turn Directions */}
-                  {directionsData.directions?.steps && (
-                    <div>
-                      <h3 className="mb-3 font-semibold text-gray-900 dark:text-white">
-                        Turn-by-Turn Directions
-                      </h3>
-                      <div className="space-y-3">
-                        {directionsData.directions.steps.map(
-                          (step: string, idx: number) => (
-                            <div
-                              key={idx}
-                              className="flex gap-3 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800"
-                            >
-                              <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm font-bold text-white">
-                                {idx + 1}
-                              </div>
-                              <div
-                                className="flex-1 text-sm text-gray-700 dark:text-gray-300"
-                                dangerouslySetInnerHTML={{ __html: step }}
-                              />
-                            </div>
-                          )
-                        )}
-                      </div>
-                    </div>
-                  )}
 
                   {/* Action Buttons */}
                   <div className="flex gap-3">

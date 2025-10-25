@@ -44,6 +44,11 @@
 - **Backend Setup:** [backend/README.md](./backend/README.md)
 - **Frontend Setup:** [frontend/README.md](./frontend/README.md)
 
+### Demo & Presentation
+- **[DEMO_GUIDE.md](./DEMO_GUIDE.md)** 🎬 - Complete demo script (8-10 min), technical deep-dive, Q&A prep
+- **[DEMO_QUICK_REFERENCE.md](./DEMO_QUICK_REFERENCE.md)** 📋 - One-page cheat sheet (print & keep nearby)
+- **[PRESENTATION_SLIDES_OUTLINE.md](./PRESENTATION_SLIDES_OUTLINE.md)** 📊 - Full slide deck outline with speaker notes
+
 ---
 
 ## 🤖 AI & Technical Guides
@@ -157,6 +162,12 @@
 2. [PHASE7_CHAT_COMPLETE.md](./PHASE7_CHAT_COMPLETE.md) - Latest completion
 3. All PHASE*_SUMMARY.md files - Historical progress
 
+### "I need to prepare a demo/presentation"
+1. [DEMO_GUIDE.md](./DEMO_GUIDE.md) - Complete demo guide with 8-10 min script
+2. [DEMO_QUICK_REFERENCE.md](./DEMO_QUICK_REFERENCE.md) - Print this cheat sheet
+3. [PRESENTATION_SLIDES_OUTLINE.md](./PRESENTATION_SLIDES_OUTLINE.md) - Create your slides
+4. [evaluation_criteria.md](./evaluation_criteria.md) - Understand scoring
+
 ---
 
 ## 📁 Documentation by Category
@@ -245,8 +256,9 @@
 
 ## 📊 Documentation Statistics
 
-- **Total Documentation Files:** 40+
+- **Total Documentation Files:** 43+
 - **Setup Guides:** 3 comprehensive + 12 specific
+- **Demo & Presentation Guides:** 3
 - **API Integration Guides:** 6
 - **Feature Guides:** 8
 - **Phase Summaries:** 12

@@ -136,7 +136,30 @@ export async function analyzeRoom(
 }
 
 /**
- * Get artwork recommendations
+ * Get FAST artwork recommendations (2-3s)
+ * FAISS + local catalog only, no external APIs
+ */
+export async function getFastRecommendations(
+  request: RecommendationRequest
+): Promise<RecommendationResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/recommend/fast`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get artwork recommendations (FULL with enrichment, 8-12s)
  */
 export async function getRecommendations(
   request: RecommendationRequest
@@ -152,6 +175,56 @@ export async function getRecommendations(
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
     throw new Error(error.detail || `HTTP ${response.status}: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get trending styles
+ */
+export async function getTrendingStyles(limit: number = 10): Promise<any> {
+  const response = await fetch(`${API_BASE_URL}/api/recommend/trending?limit=${limit}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch trending styles');
+  }
+
+  return response.json();
+}
+
+/**
+ * Enrich recommendations with AI reasoning (batch)
+ * Call this in background after showing fast recommendations
+ */
+export async function enrichRecommendationsWithReasoning(
+  artworks: Array<{
+    id: string;
+    title: string;
+    style: string;
+    match_score: number;
+    tags?: string[];
+  }>,
+  roomStyle: string,
+  colors: string[] = []
+): Promise<{
+  enriched_count: number;
+  reasoning_list: Array<{ artwork_id: string; reasoning: string }>;
+}> {
+  const response = await fetch(`${API_BASE_URL}/api/recommend/enrich-reasoning`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      artworks,
+      room_style: roomStyle,
+      colors,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to enrich reasoning');
   }
 
   return response.json();

@@ -55,7 +55,8 @@ class StoreInventoryAgent:
         # Tavily API (Already configured for trends, can also search products)
         self.tavily_api_key = os.getenv("TAVILY_API_KEY")
         
-        self.http_client = httpx.AsyncClient(timeout=30.0)
+        # Reduced timeout for faster failures (was 30s, now 5s)
+        self.http_client = httpx.AsyncClient(timeout=5.0)
         
         # Log available FREE sources
         sources = []
@@ -110,6 +111,7 @@ class StoreInventoryAgent:
             search_terms.append(color)
         full_query = " ".join(search_terms)
         
+        # SPEED OPTIMIZATION: Try Unsplash first (fastest), skip others if we get results
         # Priority 1: Unsplash (FREE, SPECIFIC art images with print-on-demand)
         # BEST for showing individual artworks, not category pages
         if self.unsplash_access_key and len(results) < limit:
@@ -118,19 +120,26 @@ class StoreInventoryAgent:
                     full_query, limit - len(results)
                 )
                 results.extend(unsplash_results)
+                # If we got enough results from Unsplash, skip other APIs for speed
+                if len(results) >= limit:
+                    return results[:limit]
             except Exception as e:
                 print(f"Error searching Unsplash: {e}")
         
-        # Priority 2: Google Shopping API (FREE tier: 100 queries/day)
-        if self.google_api_key and len(results) < limit:
+        # Priority 2: Tavily (faster than Google Shopping, already configured)
+        if self.tavily_api_key and len(results) < limit:
             try:
-                google_results = await self._search_google_shopping(
-                    full_query, min_price, max_price, limit - len(results)
+                tavily_results = await self._search_tavily_products(
+                    full_query, limit - len(results)
                 )
-                results.extend(google_results)
+                results.extend(tavily_results)
+                # If we got enough, skip remaining APIs
+                if len(results) >= limit:
+                    return results[:limit]
             except Exception as e:
-                print(f"Error searching Google Shopping: {e}")
+                print(f"Error searching Tavily: {e}")
         
+        # Only try these if we still need more results (rare)
         # Priority 3: Pixabay (FREE, specific art images)
         if self.pixabay_api_key and len(results) < limit:
             try:
@@ -151,15 +160,15 @@ class StoreInventoryAgent:
             except Exception as e:
                 print(f"Error searching Pexels: {e}")
         
-        # Priority 5: Tavily (real product links, but often category pages)
-        if self.tavily_api_key and len(results) < limit:
+        # Priority 5: Google Shopping API (slower, use as last resort)
+        if self.google_api_key and len(results) < limit:
             try:
-                tavily_results = await self._search_tavily_products(
-                    full_query, limit - len(results)
+                google_results = await self._search_google_shopping(
+                    full_query, min_price, max_price, limit - len(results)
                 )
-                results.extend(tavily_results)
+                results.extend(google_results)
             except Exception as e:
-                print(f"Error searching Tavily: {e}")
+                print(f"Error searching Google Shopping: {e}")
         
         # Fallback: Curated mock data with real purchasable links
         if not results:

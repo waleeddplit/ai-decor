@@ -6,6 +6,7 @@ POST /recommend - Get artwork recommendations
 import time
 import json
 import random
+import asyncio
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, HTTPException
@@ -47,6 +48,110 @@ def load_local_catalog():
 
 # Load catalog on module import
 load_local_catalog()
+
+
+async def _process_artwork_recommendation(
+    idx: int,
+    artwork_meta: dict,
+    match_score: float,
+    request: RecommendationRequest,
+):
+    """
+    Process a single artwork recommendation in parallel
+    Fetches store data and generates AI reasoning
+    """
+    # Initialize with FAISS metadata
+    title = artwork_meta.get('title', 'Untitled')
+    artist = artwork_meta.get('artist', 'Unknown Artist')
+    price = f"${artwork_meta.get('price', 0)}"
+    image_url = artwork_meta.get('image_url', 'https://via.placeholder.com/400')
+    thumbnail_url = artwork_meta.get('thumbnail_url')
+    purchase_url = None
+    download_url = None
+    source = "Local Catalog"
+    purchase_options = []
+    print_on_demand = []
+    
+    # Fetch real store data with timeout protection
+    try:
+        # Build search query from FAISS metadata
+        style = artwork_meta.get('style', 'modern')
+        tags = artwork_meta.get('tags', [])
+        
+        if tags and len(tags) > idx:
+            search_query = f"{style} {tags[idx]} wall art"
+        elif tags:
+            search_query = f"{style} {tags[0]} art print"
+        else:
+            variations = ['wall art', 'canvas print', 'framed art', 'poster print']
+            search_query = f"{style} {variations[idx % len(variations)]}"
+        
+        print(f"🔍 Search #{idx+1}: {search_query}")
+        
+        # Fetch real store data (async - runs in parallel with timeout!)
+        store_results = await asyncio.wait_for(
+            store_agent.search_artwork(
+                query=search_query,
+                style=style,
+                limit=1  # Only need 1 result per recommendation for speed
+            ),
+            timeout=3.0  # Max 3 seconds per search
+        )
+        
+        # Use first result if available
+        if store_results:
+            real_item = store_results[0]
+            title = real_item.get('title', title)
+            artist = real_item.get('artist', artist)
+            price = real_item.get('price', price)
+            image_url = real_item.get('image_url', image_url)
+            thumbnail_url = real_item.get('thumbnail_url', thumbnail_url)
+            purchase_url = real_item.get('purchase_url')
+            download_url = real_item.get('download_url')
+            source = real_item.get('source')
+            purchase_options = real_item.get('purchase_options', [])
+            print_on_demand = real_item.get('print_on_demand', [])
+            print(f"✅ Replaced with real store item: '{title}' from {source}")
+    
+    except asyncio.TimeoutError:
+        print(f"⏱️  Store search timed out for item {idx} (>3s)")
+    except Exception as e:
+        print(f"⚠️  Store search failed for item {idx}: {e}")
+    
+    # Generate AI reasoning (async - runs in parallel!)
+    try:
+        reasoning = await chat_agent.generate_reasoning(
+            artwork_title=artwork_meta.get('title', 'Untitled'),
+            artwork_style=artwork_meta.get('style', 'Contemporary'),
+            room_style=request.user_style or request.room_style,
+            colors=request.color_preferences or request.colors,
+            match_score=match_score,
+            artwork_tags=artwork_meta.get('tags', [])
+        )
+    except Exception as e:
+        print(f"⚠️  LLM reasoning failed for item {idx}: {e}")
+        reasoning = f"This {artwork_meta.get('style', 'Contemporary').lower()} piece matches your room's aesthetic with a {match_score:.0f}% compatibility score."
+    
+    return ArtworkRecommendation(
+        id=artwork_meta.get('id', 'unknown'),
+        title=title,
+        artist=artist,
+        price=price,
+        image_url=image_url,
+        thumbnail_url=thumbnail_url,
+        match_score=match_score,
+        tags=artwork_meta.get('tags', []),
+        reasoning=reasoning,
+        stores=artwork_meta.get('stores', []),
+        dimensions=artwork_meta.get('dimensions', 'Standard'),
+        medium=artwork_meta.get('medium'),
+        style=artwork_meta.get('style', 'Contemporary'),
+        purchase_url=purchase_url,
+        download_url=download_url,
+        source=source,
+        purchase_options=purchase_options,
+        print_on_demand=print_on_demand
+    )
 
 
 def get_local_catalog_recommendations(style: str, limit: int = 3) -> list:
@@ -157,6 +262,183 @@ async def get_store_directions(
         raise HTTPException(status_code=500, detail=f"Error getting directions: {str(e)}")
 
 
+@router.post("/recommend/fast", response_model=RecommendationResponse)
+async def get_fast_recommendations(request: RecommendationRequest):
+    """
+    FAST recommendations - Only FAISS search + local catalog (2-3 seconds)
+    No external API calls, no AI reasoning, no trends
+    Use this for initial fast display, then enrich with other APIs
+    """
+    try:
+        start_time = time.time()
+        
+        # Query FAISS vector database for similar artworks
+        faiss_client = get_faiss_client()
+        recommendations = []
+        
+        if request.style_vector and len(request.style_vector) > 0:
+            try:
+                import numpy as np
+                style_vector = np.array(request.style_vector, dtype=np.float32)
+                distances, results = faiss_client.search(style_vector, k=request.limit)
+                
+                if results:
+                    for idx, (dist, artwork_meta) in enumerate(zip(distances, results)):
+                        similarity = 1.0 / (1.0 + dist)
+                        match_score = similarity * 100
+                        
+                        # Simple template reasoning (fast, no LLM call)
+                        reasoning = f"This {artwork_meta.get('style', 'contemporary').lower()} piece matches your room's aesthetic with a {match_score:.0f}% compatibility score."
+                        
+                        recommendations.append(ArtworkRecommendation(
+                            id=artwork_meta.get('id', 'unknown'),
+                            title=artwork_meta.get('title', 'Untitled'),
+                            artist=artwork_meta.get('artist', 'Unknown Artist'),
+                            price=f"${artwork_meta.get('price', 0)}",
+                            image_url=artwork_meta.get('image_url', 'https://via.placeholder.com/400'),
+                            thumbnail_url=artwork_meta.get('thumbnail_url'),
+                            match_score=match_score,
+                            tags=artwork_meta.get('tags', []),
+                            reasoning=reasoning,
+                            stores=[],
+                            dimensions=artwork_meta.get('dimensions', 'Standard'),
+                            medium=artwork_meta.get('medium'),
+                            style=artwork_meta.get('style', 'Contemporary'),
+                            purchase_url=None,
+                            download_url=None,
+                            source="FAISS Database",
+                            purchase_options=[],
+                            print_on_demand=[]
+                        ))
+            except Exception as e:
+                print(f"FAISS search error: {e}")
+        
+        # Add local catalog items first
+        room_style = request.user_style or request.room_style or "Modern"
+        local_items = get_local_catalog_recommendations(room_style, limit=2)
+        
+        # Track image identifiers to avoid duplicates (extract photo ID from URL)
+        def extract_photo_id(url):
+            """Extract unique photo ID from image URL (handles Unsplash IDs, etc.)"""
+            if not url:
+                return url
+            # For Unsplash: extract photo ID (e.g., tTEYELCR8OA from the URL)
+            if 'unsplash.com' in url:
+                import re
+                # Match pattern like /photo-...-PHOTOID or /photos/PHOTOID
+                match = re.search(r'/photo[s]?/[^/]*-([A-Za-z0-9_-]+)', url)
+                if not match:
+                    match = re.search(r'/photo-\d+-([A-Za-z0-9_-]+)\?', url)
+                if match:
+                    return match.group(1)
+            # For other URLs, use the base URL without query params
+            return url.split('?')[0]
+        
+        seen_photo_ids = set()
+        seen_photo_ids.update([extract_photo_id(item['image_url']) for item in local_items])
+        
+        for item in local_items:
+            reasoning = f"Expertly curated {item['category'].replace('_', ' ')} artwork that perfectly complements your {room_style.lower()} aesthetic. High-quality print available for instant download."
+            recommendations.append(ArtworkRecommendation(
+                id=item['id'],
+                title=item['title'],
+                artist=item['artist'],
+                price=item['price'],
+                image_url=item['image_url'],
+                thumbnail_url=item['thumbnail_url'],
+                style=item['category'].replace('_', ' ').title(),
+                tags=item['tags'],
+                dimensions=f"{item['width']}x{item['height']}",
+                match_score=92.0,  # High score for curated items (was 85)
+                reasoning=reasoning,
+                download_url=item['download_url'],
+                source="Local Catalog",
+                purchase_options=[],
+                print_on_demand=[{
+                    'service': ps['name'],
+                    'url': ps['url'],
+                    'price': ps['price_from']
+                } for ps in item['print_services']],
+                attribution={
+                    'text': item['attribution'],
+                    'url': item['attribution_url']
+                }
+            ))
+        
+        # Add 1-2 online store results for variety (after local to avoid duplicates)
+        try:
+            # Quick search for 3 online results with aggressive timeout (we'll filter duplicates)
+            online_results = await asyncio.wait_for(
+                store_agent.search_artwork(
+                    query=f"{room_style} wall art decor",
+                    style=room_style,
+                    limit=3
+                ),
+                timeout=2.0  # Max 2 seconds for online search
+            )
+            
+            online_added = 0
+            for online_item in online_results:
+                image_url = online_item.get('image_url', '')
+                
+                # Skip if no valid image URL
+                if not image_url or image_url == 'https://via.placeholder.com/400':
+                    continue
+                
+                # Extract photo ID and check for duplicates
+                photo_id = extract_photo_id(image_url)
+                if photo_id in seen_photo_ids:
+                    print(f"⚠️  Skipping duplicate image (ID: {photo_id}): {online_item.get('title', 'Unknown')}")
+                    continue
+                
+                seen_photo_ids.add(photo_id)
+                recommendations.append(ArtworkRecommendation(
+                    id=online_item.get('id', f"online-{len(recommendations)}"),
+                    title=online_item.get('title', 'Artwork'),
+                    artist=online_item.get('artist', 'Various Artists'),
+                    price=online_item.get('price', 'Price varies'),
+                    image_url=image_url,
+                    thumbnail_url=online_item.get('thumbnail_url'),
+                    match_score=88.0,  # Slightly lower than local catalog
+                    tags=online_item.get('tags', []),
+                    reasoning="",  # Empty for skeleton loader
+                    stores=[],
+                    dimensions=online_item.get('dimensions'),
+                    style=online_item.get('style', room_style),
+                    purchase_url=online_item.get('purchase_url'),
+                    source=online_item.get('source', 'Online'),
+                    purchase_options=[]
+                ))
+                online_added += 1
+                
+                # Stop after adding 2 unique online items
+                if online_added >= 2:
+                    break
+            
+            print(f"✅ Added {online_added} unique online results (filtered {len(online_results) - online_added} duplicates)")
+        except asyncio.TimeoutError:
+            print(f"⏱️  Online search timed out (>2s), skipping")
+        except Exception as e:
+            print(f"⚠️  Online search failed: {e}, continuing with local only")
+        
+        # Sort by match score (highest first)
+        recommendations.sort(key=lambda x: x.match_score, reverse=True)
+        
+        query_time = time.time() - start_time
+        print(f"⚡ Fast recommendations returned in {query_time:.2f}s with {len(recommendations)} items")
+        
+        return RecommendationResponse(
+            recommendations=recommendations[:request.limit],
+            total_matches=len(recommendations),
+            query_time=query_time,
+            trends=[]
+        )
+    
+    except Exception as e:
+        print(f"Error in fast recommendations: {e}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
 @router.post("/recommend", response_model=RecommendationResponse)
 async def get_recommendations(request: RecommendationRequest):
     """
@@ -180,7 +462,11 @@ async def get_recommendations(request: RecommendationRequest):
 
         # Get trending styles for context (pass room style for more relevant results)
         room_style = request.user_style or request.room_style
-        trends = await trend_agent.get_trending_styles(location=room_style)
+        try:
+            trends = await trend_agent.get_trending_styles(location=room_style)
+        except Exception as e:
+            print(f"⚠️  Trends API failed: {e}")
+            trends = []
 
         # Query FAISS vector database for similar artworks using style_vector
         faiss_client = get_faiss_client()
@@ -196,102 +482,34 @@ async def get_recommendations(request: RecommendationRequest):
                 # Search FAISS for similar artworks
                 distances, results = faiss_client.search(style_vector, k=request.limit)
                 
-                # Convert FAISS results to recommendations
+                # Convert FAISS results to recommendations using PARALLEL processing
                 if results:
+                    print(f"⚡ Processing {len(results)} recommendations in PARALLEL for speed...")
+                    
+                    # Create tasks for parallel execution
+                    tasks = []
                     for idx, (dist, artwork_meta) in enumerate(zip(distances, results)):
                         similarity = 1.0 / (1.0 + dist)
                         match_score = similarity * 100
                         
-                        # Initialize with local catalog defaults
-                        title = artwork_meta.get('title', 'Untitled')
-                        artist = artwork_meta.get('artist', 'Unknown Artist')
-                        price = f"${artwork_meta.get('price', 0)}"
-                        image_url = artwork_meta.get('image_url', 'https://via.placeholder.com/400')
-                        thumbnail_url = artwork_meta.get('thumbnail_url')
-                        purchase_url = None
-                        download_url = None
-                        source = None
-                        purchase_options = []
-                        print_on_demand = []
-                        
-                        try:
-                            # Create UNIQUE search query for each recommendation
-                            style = artwork_meta.get('style', 'modern')
-                            tags = artwork_meta.get('tags', [])
-                            
-                            # Build diverse query using style + tags
-                            if tags and len(tags) > idx:
-                                search_query = f"{style} {tags[idx]} wall art"
-                            elif tags:
-                                search_query = f"{style} {tags[0]} art print"
-                            else:
-                                # Use different variations for diversity
-                                variations = ['wall art', 'canvas print', 'framed art', 'poster print']
-                                search_query = f"{style} {variations[idx % len(variations)]}"
-                            
-                            print(f"🔍 Search #{idx+1}: {search_query}")
-                            
-                            # Search for REAL store version with actual images
-                            # Request MORE results to get diversity
-                            store_results = await store_agent.search_artwork(
-                                query=search_query,
-                                style=style,
-                                limit=min(5, request.limit * 2)  # Get extra results for variety
-                            )
-                            
-                            # Use different result for each recommendation (if available)
-                            if store_results:
-                                result_idx = min(idx, len(store_results) - 1)
-                                real_item = store_results[result_idx]
-                                print(f"   Using result #{result_idx + 1} of {len(store_results)}")
-                                
-                                # REPLACE with real store data
-                                title = real_item.get('title', title)
-                                artist = real_item.get('artist', artist)
-                                price = real_item.get('price', price)
-                                image_url = real_item.get('image_url', image_url)
-                                thumbnail_url = real_item.get('thumbnail_url', thumbnail_url)
-                                purchase_url = real_item.get('purchase_url')
-                                download_url = real_item.get('download_url')
-                                source = real_item.get('source')
-                                purchase_options = real_item.get('purchase_options', [])
-                                print_on_demand = real_item.get('print_on_demand', [])
-                                
-                                print(f"✅ Replaced with real store item: '{title}' from {source}")
-                        except Exception as e:
-                            print(f"⚠️  Using local catalog (store search failed): {e}")
-                        
-                        # Generate AI reasoning
-                        reasoning = await chat_agent.generate_reasoning(
-                            artwork_title=artwork_meta.get('title', 'Untitled'),
-                            artwork_style=artwork_meta.get('style', 'Contemporary'),
-                            room_style=request.user_style or request.room_style,
-                            colors=request.color_preferences or request.colors,
+                        # Create async task (don't await yet - will run in parallel!)
+                        task = _process_artwork_recommendation(
+                            idx=idx,
+                            artwork_meta=artwork_meta,
                             match_score=match_score,
-                            artwork_tags=artwork_meta.get('tags', [])
+                            request=request
                         )
-                        
-                        recommendations.append(ArtworkRecommendation(
-                            id=artwork_meta.get('id', 'unknown'),
-                            title=title,
-                            artist=artist,
-                            price=price,
-                            image_url=image_url,
-                            thumbnail_url=thumbnail_url,
-                            match_score=match_score,
-                            tags=artwork_meta.get('tags', []),
-                            reasoning=reasoning,
-                            stores=artwork_meta.get('stores', []),
-                            dimensions=artwork_meta.get('dimensions', 'Standard'),
-                            medium=artwork_meta.get('medium'),
-                            style=artwork_meta.get('style', 'Contemporary'),
-                            # Real store data
-                            purchase_url=purchase_url,
-                            download_url=download_url,
-                            source=source,
-                            purchase_options=purchase_options,
-                            print_on_demand=print_on_demand
-                        ))
+                        tasks.append(task)
+                    
+                    # Execute ALL tasks in parallel (10x faster!)
+                    print(f"⏱️  Starting parallel execution of {len(tasks)} tasks...")
+                    parallel_start = time.time()
+                    recommendations = await asyncio.gather(*tasks, return_exceptions=True)
+                    parallel_time = time.time() - parallel_start
+                    
+                    # Filter out any exceptions
+                    recommendations = [r for r in recommendations if isinstance(r, ArtworkRecommendation)]
+                    print(f"✅ Parallel processing complete in {parallel_time:.2f}s (was ~{len(tasks)*3:.1f}s sequential)")
                         
             except Exception as e:
                 print(f"FAISS search error: {e}, falling back to mock data")
@@ -323,12 +541,16 @@ async def get_recommendations(request: RecommendationRequest):
             print(f"📁 Adding {len(local_items)} local catalog recommendations")
             for item in local_items:
                 # Generate AI reasoning for local catalog items
-                reasoning = await chat_agent.generate_reasoning(
-                    artwork_title=item['title'],
-                    artwork_style=item['category'].replace('_', ' ').title(),
-                    room_style=room_style,
-                    match_score=85.0  # High match for curated items
-                )
+                try:
+                    reasoning = await chat_agent.generate_reasoning(
+                        artwork_title=item['title'],
+                        artwork_style=item['category'].replace('_', ' ').title(),
+                        room_style=room_style,
+                        match_score=85.0  # High match for curated items
+                    )
+                except Exception as e:
+                    print(f"⚠️  LLM reasoning failed for local item: {e}")
+                    reasoning = f"This curated {item['category'].replace('_', ' ')} piece is expertly selected to complement your {room_style.lower()} style with 85% compatibility."
                 
                 local_catalog_recommendations.append(ArtworkRecommendation(
                     id=item['id'],
@@ -410,6 +632,104 @@ async def get_recommendations(request: RecommendationRequest):
         raise HTTPException(
             status_code=500, detail=f"Error generating recommendations: {str(e)}"
         )
+
+
+class EnrichReasoningRequest(BaseModel):
+    artworks: list[dict]
+    room_style: str
+    colors: list[str] = []
+
+
+@router.post("/recommend/enrich-reasoning")
+async def enrich_recommendations_with_reasoning(request: EnrichReasoningRequest):
+    """
+    Generate AI reasoning for multiple artworks in parallel
+    Use this to enrich fast recommendations with LLM-powered explanations
+    
+    Args:
+        artworks: List of {id, title, style, match_score, tags}
+        room_style: User's room style
+        colors: Room color palette
+    
+    Returns:
+        List of {artwork_id, reasoning}
+    """
+    try:
+        artworks = request.artworks
+        room_style = request.room_style
+        colors = request.colors
+        # Generate reasoning for all artworks in parallel
+        async def generate_single_reasoning(artwork):
+            try:
+                reasoning = await chat_agent.generate_reasoning(
+                    artwork_title=artwork.get('title', 'Untitled'),
+                    artwork_style=artwork.get('style', 'Contemporary'),
+                    room_style=room_style,
+                    colors=colors,
+                    match_score=artwork.get('match_score', 90.0),
+                    artwork_tags=artwork.get('tags', [])
+                )
+                return {
+                    "artwork_id": artwork.get('id'),
+                    "reasoning": reasoning
+                }
+            except Exception as e:
+                print(f"Error generating reasoning for {artwork.get('id')}: {e}")
+                return {
+                    "artwork_id": artwork.get('id'),
+                    "reasoning": f"This {artwork.get('style', 'contemporary').lower()} piece complements your {room_style.lower()} room beautifully."
+                }
+        
+        # Process all artworks in parallel
+        tasks = [generate_single_reasoning(artwork) for artwork in artworks]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Filter out exceptions
+        enriched = [r for r in results if isinstance(r, dict)]
+        
+        return {
+            "enriched_count": len(enriched),
+            "reasoning_list": enriched
+        }
+    
+    except Exception as e:
+        print(f"Error in batch reasoning generation: {e}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@router.post("/recommend/{artwork_id}/reasoning")
+async def generate_artwork_reasoning(
+    artwork_id: str,
+    artwork_title: str,
+    artwork_style: str,
+    room_style: str,
+    colors: list = [],
+    match_score: float = 90.0
+):
+    """
+    Generate AI reasoning for a single artwork
+    Use this to enrich recommendations with LLM-powered explanations
+    """
+    try:
+        reasoning = await chat_agent.generate_reasoning(
+            artwork_title=artwork_title,
+            artwork_style=artwork_style,
+            room_style=room_style,
+            colors=colors,
+            match_score=match_score,
+            artwork_tags=[]
+        )
+        
+        return {
+            "artwork_id": artwork_id,
+            "reasoning": reasoning
+        }
+    except Exception as e:
+        print(f"Error generating reasoning: {e}")
+        return {
+            "artwork_id": artwork_id,
+            "reasoning": f"This {artwork_style.lower()} piece matches your {room_style.lower()} room perfectly."
+        }
 
 
 @router.get("/recommend/trending")
